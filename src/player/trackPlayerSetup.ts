@@ -1,22 +1,16 @@
-import TrackPlayer, { RatingType, Capability } from 'react-native-track-player';
+import TrackPlayer, {
+  RatingType,
+  Capability,
+  AppKilledPlaybackBehavior,
+} from 'react-native-track-player';
 
 export const setupPlayer = async (): Promise<boolean> => {
-  const isSetup = await TrackPlayer.isServiceRegistered();
-  if (isSetup) {
-    const isInitialized = await TrackPlayer.isInitialized();
-    if (isInitialized) {
-      return true;
-    }
-  }
-
   try {
-    await TrackPlayer.setupPlayer({
-      waitForBuffer: true,
-    });
+    await TrackPlayer.setupPlayer();
     await TrackPlayer.updateOptions({
       android: {
         appKilledPlaybackBehavior:
-          TrackPlayer.APP_KILLED_PLAYBACK_BEHAVIOR.ContinuePlayback,
+          AppKilledPlaybackBehavior.ContinuePlayback,
       },
       capabilities: [
         Capability.Play,
@@ -35,7 +29,10 @@ export const setupPlayer = async (): Promise<boolean> => {
       progressUpdateEventInterval: 1,
     });
     return true;
-  } catch {
+  } catch (e: any) {
+    if (e?.message?.includes?.('already been initialized')) {
+      return true;
+    }
     return false;
   }
 };

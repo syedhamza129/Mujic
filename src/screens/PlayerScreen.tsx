@@ -6,13 +6,13 @@ import {
   StyleSheet,
   SafeAreaView,
   StatusBar,
+  ActivityIndicator,
 } from 'react-native';
 import TrackPlayer, {
   usePlaybackState,
   useProgress,
   useActiveTrack,
   State,
-  Event,
 } from 'react-native-track-player';
 import Slider from '@react-native-community/slider';
 import { setupPlayer } from '../player/trackPlayerSetup';
@@ -27,16 +27,18 @@ export default function PlayerScreen(): React.JSX.Element {
   const playbackState = usePlaybackState();
   const { position, duration } = useProgress(250);
   const activeTrack = useActiveTrack();
-  const [isPlayerReady, setIsPlayerReady] = useState(false);
+  const [playerStatus, setPlayerStatus] = useState<'init' | 'ready' | 'error'>('init');
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekPosition, setSeekPosition] = useState(0);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
+      console.log('[Mujic] setupPlayer starting');
       const ready = await setupPlayer();
+      console.log('[Mujic] setupPlayer result:', ready);
       if (mounted) {
-        setIsPlayerReady(ready);
+        setPlayerStatus(ready ? 'ready' : 'error');
       }
     })();
     return () => {
@@ -45,29 +47,44 @@ export default function PlayerScreen(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!isPlayerReady) return;
+    if (playerStatus !== 'ready') return;
     (async () => {
-      const queue = await TrackPlayer.getQueue();
-      if (queue.length === 0) {
-        await TrackPlayer.add([
-          {
+      try {
+        console.log('[Mujic] Checking queue');
+        const queue = await TrackPlayer.getQueue();
+        console.log('[Mujic] Queue:', JSON.stringify(queue));
+        if (queue.length === 0) {
+          await TrackPlayer.reset();
+          const track = {
             id: 'test-track',
-            url: require('../assets/test.mp3'),
+            url: 'android.resource://com.mujicrn/raw/test',
             title: '440Hz Test Tone',
             artist: 'Mujic PoC',
             duration: 30,
-          },
-        ]);
+          };
+          console.log('[Mujic] Adding track:', JSON.stringify(track));
+          await TrackPlayer.add([track]);
+          console.log('[Mujic] Track added');
+        }
+      } catch (e) {
+        console.log('[Mujic] Error in track setup:', String(e));
       }
     })();
-  }, [isPlayerReady]);
+  }, [playerStatus]);
 
   const togglePlayback = useCallback(async () => {
-    const state = playbackState.state;
-    if (state === State.Playing) {
-      await TrackPlayer.pause();
-    } else {
-      await TrackPlayer.play();
+    try {
+      const state = playbackState.state;
+      console.log('[Mujic] togglePlayback state:', state);
+      if (state === State.Playing) {
+        await TrackPlayer.pause();
+        console.log('[Mujic] Paused');
+      } else if (state === State.Paused || state === State.Ready || state === State.Stopped || state === State.None) {
+        await TrackPlayer.play();
+        console.log('[Mujic] Playing');
+      }
+    } catch (e) {
+      console.log('[Mujic] togglePlayback error:', String(e));
     }
   }, [playbackState.state]);
 
@@ -76,6 +93,36 @@ export default function PlayerScreen(): React.JSX.Element {
     playbackState.state === State.Buffering;
 
   const displayPosition = isSeeking ? seekPosition : position;
+
+  if (playerStatus === 'init') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <ActivityIndicator size="large" color="#1DB954" />
+        <Text style={styles.loadingText}>Initializing player...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (playerStatus === 'error') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Text style={styles.errorIcon}>⚠</Text>
+        <Text style={styles.errorText}>Player initialization failed</Text>
+        <TouchableOpacity
+          style={styles.retryButton}
+          onPress={() => {
+            setPlayerStatus('init');
+            (async () => {
+              const ready = await setupPlayer();
+              setPlayerStatus(ready ? 'ready' : 'error');
+            })();
+          }}
+        >
+          <Text style={styles.retryText}>Retry</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -123,7 +170,11 @@ export default function PlayerScreen(): React.JSX.Element {
         <TouchableOpacity
           style={styles.controlButton}
           onPress={async () => {
-            await TrackPlayer.skipToPrevious();
+            try {
+              await TrackPlayer.skipToPrevious();
+            } catch (e) {
+              console.log('[Mujic] skipToPrevious error:', String(e));
+            }
           }}
         >
           <Text style={styles.controlIcon}>⏮</Text>
@@ -132,7 +183,7 @@ export default function PlayerScreen(): React.JSX.Element {
         <TouchableOpacity
           style={[styles.controlButton, styles.playButton]}
           onPress={togglePlayback}
-          disabled={!isPlayerReady || isLoading}
+          disabled={isLoading}
         >
           <Text style={styles.playIcon}>
             {isLoading ? '⏳' : isPlaying ? '⏸' : '▶'}
@@ -142,7 +193,11 @@ export default function PlayerScreen(): React.JSX.Element {
         <TouchableOpacity
           style={styles.controlButton}
           onPress={async () => {
-            await TrackPlayer.skipToNext();
+            try {
+              await TrackPlayer.skipToNext();
+            } catch (e) {
+              console.log('[Mujic] skipToNext error:', String(e));
+            }
           }}
         >
           <Text style={styles.controlIcon}>⏭</Text>
@@ -235,5 +290,30 @@ const styles = StyleSheet.create({
   playIcon: {
     fontSize: 32,
     color: '#000000',
+  },
+  loadingText: {
+    color: '#b3b3b3',
+    fontSize: 16,
+    marginTop: 16,
+  },
+  errorIcon: {
+    fontSize: 48,
+    marginBottom: 12,
+  },
+  errorText: {
+    color: '#ff6b6b',
+    fontSize: 16,
+    marginBottom: 20,
+  },
+  retryButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    backgroundColor: '#1DB954',
+    borderRadius: 8,
+  },
+  retryText: {
+    color: '#000',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
