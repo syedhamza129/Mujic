@@ -72,3 +72,11 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Backend
+backend/.env
+backend/dist/
+backend/node_modules/
+backend/storage/
+backend/test_results*.log
+backend/test-output*.txt
