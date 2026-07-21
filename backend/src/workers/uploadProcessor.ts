@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma';
 import { uploadToR2 } from '../lib/r2';
 import { logger } from '../lib/logger';
 import { env } from '../config/env';
+import { fetchAlbumArt } from '../services/albumArtService';
 
 // ─── Job data interface ───
 interface UploadJobData {
@@ -18,12 +19,14 @@ interface UploadJobData {
 // ─── Redis connection config for BullMQ ───
 const redisUrl = new URL(env.REDIS_URL);
 
+const isTls = redisUrl.protocol === 'rediss:';
+
 const connection = {
   host: redisUrl.hostname,
   port: Number(redisUrl.port),
   username: redisUrl.username,
   password: redisUrl.password,
-  tls: {},
+  ...(isTls && { tls: {} }),
 };
 
 // ─── Upload Processing Queue ───
@@ -104,7 +107,7 @@ async function processUpload(job: Job<UploadJobData>): Promise<void> {
     await uploadToR2(audioKey, fileBuffer, mimeType);
     await job.updateProgress(70);
 
-    // 5. Upload cover art if extracted
+    // 5. Upload cover art if extracted, otherwise try to fetch from Deezer
     let thumbnailUrl: string | null = null;
     if (metadata?.coverArt) {
       const coverData = metadata.coverArt as any;
@@ -114,7 +117,12 @@ async function processUpload(job: Job<UploadJobData>): Promise<void> {
       const coverKey = `uploads/${userId}/${songId}/cover${coverExt}`;
 
       await uploadToR2(coverKey, coverBuffer, coverMime);
-      thumbnailUrl = coverKey; // Store the key; signed URL is generated at read time
+      thumbnailUrl = coverKey;
+    } else if (title) {
+      const result = await fetchAlbumArt(title, artist, userId, songId);
+      if (result) {
+        thumbnailUrl = result.coverKey;
+      }
     }
 
     await job.updateProgress(90);

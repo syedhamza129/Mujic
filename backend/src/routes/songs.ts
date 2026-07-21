@@ -30,7 +30,7 @@ router.get(
       );
 
       const songs = await prisma.song.findMany({
-        where: { status: 'READY' },
+        where: { status: 'READY', source: { not: 'ARCHIVE' } },
         orderBy: { playCount: 'desc' },
         take: limit,
         include: { artist: true },

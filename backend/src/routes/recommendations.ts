@@ -4,8 +4,10 @@ import { authMiddleware } from '../middleware/auth';
 import { logger } from '../lib/logger';
 import { formatSongId } from '../lib/songId';
 import { toRenderableArtworkUrl } from '../lib/mediaTickets';
+import { YouTubeProvider } from '../providers/youtube/YouTubeProvider';
 
 const router = Router();
+const ytProvider = new YouTubeProvider();
 
 // Helper to get most frequent items
 function getMostFrequent(arr: string[], topN: number): string[] {
@@ -72,6 +74,7 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
       songs = await prisma.song.findMany({
         where: {
           status: 'READY',
+          source: { not: 'ARCHIVE' },
           id: { notIn: Array.from(playedSongIds) },
           OR: [
             ...(topGenres.length > 0
@@ -121,6 +124,7 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
               where: {
                 userId: { in: similarUserIds },
                 songId: { notIn: Array.from(playedSongIds) },
+                song: { source: { not: 'ARCHIVE' } },
               },
               include: {
                 song: {
@@ -157,6 +161,7 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
       const trending = await prisma.song.findMany({
         where: {
           status: 'READY',
+          source: { not: 'ARCHIVE' },
           id: { notIn: Array.from(playedSongIds) },
         },
         orderBy: { playCount: 'desc' },
@@ -181,6 +186,41 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
       songs = Array.from(new Set(songs.map((s) => s.id))).map((id) =>
         songs.find((s) => s.id === id)
       );
+    }
+
+    // 5. Fallback to YouTube trending if STILL not enough
+    if (songs.length < limit) {
+      try {
+        const queries = ['popular music 2026', 'trending songs', 'new music'];
+        const needed = limit - songs.length;
+        const seenIds = new Set(songs.map((s) => s.id));
+
+        for (const query of queries) {
+          if (songs.length >= limit) break;
+          const results = await ytProvider.search({ query, limit: needed * 2 });
+          for (const r of results) {
+            if (songs.length >= limit) break;
+            const candidateId = r.id;
+            if (!seenIds.has(candidateId)) {
+              seenIds.add(candidateId);
+              songs.push({
+                id: candidateId,
+                title: r.title,
+                artistName: r.artist,
+                album: r.album,
+                genre: null,
+                duration: r.duration || 0,
+                playCount: 0,
+                thumbnailUrl: r.thumbnail,
+                source: 'YOUTUBE',
+                externalId: r.id,
+              });
+            }
+          }
+        }
+      } catch (ytErr) {
+        logger.warn({ err: ytErr }, 'YouTube fallback failed for recommendations');
+      }
     }
 
     // Normalize output
