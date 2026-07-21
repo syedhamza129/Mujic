@@ -91,7 +91,7 @@ async function processUpload(job: Job<UploadJobData>): Promise<void> {
     // 2. Extract metadata
     const metadata = await extractMetadata(tempPath);
     const title = metadata?.title || path.parse(originalName).name;
-    const artist = metadata?.artist;
+    const artist: string | null = metadata?.artist ?? null;
     const album = metadata?.album;
     const genre = metadata?.genre;
     const year = metadata?.year;

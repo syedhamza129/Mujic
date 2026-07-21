@@ -22,7 +22,7 @@ export async function fetchAlbumArt(
     const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!response.ok) return null;
 
-    const body = await response.json();
+    const body = await response.json() as { data?: { album?: { cover_big?: string } }[] };
     const data = body?.data?.[0];
     if (!data?.album?.cover_big) return null;
 
