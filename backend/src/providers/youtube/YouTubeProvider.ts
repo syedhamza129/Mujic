@@ -39,7 +39,9 @@ async function getInnertube(): Promise<Innertube> {
       }
       if (cookies.length > 0) {
         cookie = cookies.join('; ');
-        logger.info({ path: COOKIE_PATH, count: cookies.length }, 'Loaded cookies for youtubei.js (Innertube)');
+        logger.info({ path: COOKIE_PATH, count: cookies.length, lines: lines.length, sample: cookies.slice(0, 3).join(', ') }, 'Loaded cookies for youtubei.js (Innertube)');
+      } else {
+        logger.warn({ lines: lines.length, firstLine: lines[0] }, 'No cookies parsed from cookies file');
       }
     } catch {
       // Cookies not found or unreadable, that's fine
@@ -70,9 +72,11 @@ let hasCookieFile = false;
 
 async function initCookieFile() {
   try {
-    await fs.access(COOKIE_PATH);
+    const stat = await fs.stat(COOKIE_PATH);
+    const content = await fs.readFile(COOKIE_PATH, 'utf-8');
+    const lines = content.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
     hasCookieFile = true;
-    logger.info({ path: COOKIE_PATH }, 'YouTube cookies file found — will pass --cookies to yt-dlp');
+    logger.info({ path: COOKIE_PATH, sizeBytes: stat.size, nonCommentLines: lines.length }, 'YouTube cookies file found — will pass --cookies to yt-dlp');
   } catch {
     hasCookieFile = false;
     logger.warn({ path: COOKIE_PATH }, 'YouTube cookies file not found — yt-dlp may fail on restricted videos');
@@ -175,16 +179,14 @@ export class YouTubeProvider implements MusicProvider {
       // Redis unavailable
     }
 
-    // Check if previously marked as non-streamable
-    let wasCachedAsFailed = false;
+    // Check if recently marked as non-streamable — warn but retry anyway
     try {
-      wasCachedAsFailed = !!(await redis.get(`yt:stream:fail:${videoId}`));
+      const wasCachedAsFailed = await redis.get(`yt:stream:fail:${videoId}`);
+      if (wasCachedAsFailed) {
+        logger.warn({ videoId }, 'Video previously failed extraction — retrying');
+      }
     } catch {
       // Redis unavailable — proceed to attempt extraction
-    }
-    if (wasCachedAsFailed) {
-      logger.warn({ videoId }, 'Video previously failed extraction, skipping');
-      throw new Error('Stream not available: video requires authentication or is restricted');
     }
 
     // Request deduplication — if another request is already extracting this video, wait for it
@@ -205,10 +207,11 @@ export class YouTubeProvider implements MusicProvider {
   }
 
   async getSongDetails(videoId: string): Promise<NormalizedSong | null> {
+    const cleanId = videoId.startsWith('yt_') ? videoId.slice(3) : videoId;
     try {
       const ytPath = await resolveYtDlpPath();
       const { cmd, args } = this.ytDlpArgs([
-        `https://www.youtube.com/watch?v=${videoId}`,
+        `https://www.youtube.com/watch?v=${cleanId}`,
         '-j',
         '--no-warnings',
         '--age-limit',
@@ -297,26 +300,31 @@ export class YouTubeProvider implements MusicProvider {
       innertube = null;
     }
 
-    // ── Fallback: yt-dlp with mobile player clients (no cookies) ─────────────
+    // ── Fallback: yt-dlp with various player clients, with and without cookies ──
     const fallbackClients = [
-      { client: 'ios',          fmt: 'bestaudio[ext=m4a]/bestaudio/best' },
-      { client: 'android',      fmt: 'bestaudio[ext=m4a]/bestaudio/best' },
-      { client: 'tv_embedded',  fmt: 'bestaudio/best'                   },
+      { client: 'ios',          fmt: 'bestaudio[ext=m4a]/bestaudio/best', useCookies: true  },
+      { client: 'android',      fmt: 'bestaudio[ext=m4a]/bestaudio/best', useCookies: true  },
+      { client: 'tv_embedded',  fmt: 'bestaudio/best',                    useCookies: true  },
+      { client: 'web',          fmt: 'bestaudio[ext=m4a]/bestaudio/best', useCookies: true  },
+      { client: 'ios',          fmt: 'bestaudio[ext=m4a]/bestaudio/best', useCookies: false },
+      { client: 'android',      fmt: 'bestaudio[ext=m4a]/bestaudio/best', useCookies: false },
+      { client: 'web',          fmt: 'bestaudio[ext=m4a]/bestaudio/best', useCookies: false },
+      { client: 'tv_embedded',  fmt: 'bestaudio/best',                    useCookies: false },
     ];
     const baseArgs = ['--get-url', '--no-warnings', '--age-limit', '99', '--socket-timeout', '20', '--no-check-certificate'];
 
-    for (const { client, fmt } of fallbackClients) {
+    for (const { client, fmt, useCookies } of fallbackClients) {
       try {
         const extraArgs = ['--extractor-args', `youtube:player_client=${client}`, '-f', fmt, ...baseArgs];
-        const { cmd, args } = this.ytDlpArgs([`https://www.youtube.com/watch?v=${videoId}`, ...extraArgs], true);
+        const { cmd, args } = this.ytDlpArgs([`https://www.youtube.com/watch?v=${videoId}`, ...extraArgs], useCookies);
         const { stdout } = await execFileAsync(cmd, args, { timeout: 35000 });
         const streamUrl = stdout.trim().split('\n')[0];
         if (streamUrl && streamUrl.startsWith('http')) {
-          logger.info({ videoId, client }, 'yt-dlp fallback stream URL extracted');
+          logger.info({ videoId, client, cookies: useCookies }, 'yt-dlp fallback stream URL extracted');
           return this.makeStreamInfo(videoId, streamUrl, 'audio/mp4');
         }
       } catch (err: any) {
-        logger.warn({ videoId, client, stderr: (err?.stderr?.toString() || '').slice(0, 150) }, 'yt-dlp fallback attempt failed');
+        logger.warn({ videoId, client, cookies: useCookies, stderr: (err?.stderr?.toString() || '').slice(0, 150) }, 'yt-dlp fallback attempt failed');
       }
     }
 

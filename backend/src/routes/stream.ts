@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import { createReadStream, promises as fs } from 'fs';
 import fsSync from 'fs';
 import { Router, Request, Response, NextFunction } from 'express';
-import { Readable } from 'stream';
+import { Readable, PassThrough } from 'stream';
 import { pipeline } from 'stream/promises';
 import { authMiddleware } from '../middleware/auth';
 import { streamLimiter } from '../middleware/rateLimiter';
@@ -83,6 +83,19 @@ export function createRequestSignal(req: Request, res: Response): { signal: Abor
 async function fetchUpstream(url: string, rangeHeader: string | undefined, method: 'GET' | 'HEAD', signal: AbortSignal): Promise<globalThis.Response> {
   const headers: Record<string, string> = { 'User-Agent': PROXY_UA };
   if (rangeHeader) headers.Range = rangeHeader;
+  // YouTube CDN URLs require the same cookies used during URL extraction
+  if (url.includes('googlevideo.com') && fsSync.existsSync(COOKIE_PATH)) {
+    try {
+      const cookieData = await fs.readFile(COOKIE_PATH, 'utf-8');
+      const cookies = cookieData.split('\n')
+        .filter((line) => line && !line.startsWith('#'))
+        .map((line) => line.split('\t'))
+        .filter((parts) => parts.length >= 7)
+        .map((parts) => `${parts[5]}=${parts[6]}`)
+        .join('; ');
+      if (cookies) headers.Cookie = cookies;
+    } catch { /* best-effort */ }
+  }
   return fetch(url, { method, headers, signal });
 }
 
@@ -113,38 +126,94 @@ async function sendUpstream(req: Request, res: Response, info: StreamInfo, headO
   }
 }
 
-function ytDlpArgs(videoId: string): string[] {
-  const args = [
+function ytDlpArgs(videoId: string, playerClient?: string): string[] {
+  const args: string[] = [
     `https://www.youtube.com/watch?v=${videoId}`,
-    '-f', 'bestaudio[ext=m4a]/bestaudio/best',
+    '-f', 'bestaudio/best',
     '-o', '-',
     '--no-warnings',
     '--no-check-certificate',
-    '--socket-timeout', '20',
+    '--socket-timeout', '30',
     '--age-limit', '99',
   ];
-  if (fsSync.existsSync(COOKIE_PATH)) args.push('--cookies', COOKIE_PATH);
+  if (playerClient) args.push('--extractor-args', `youtube:player_client=${playerClient}`);
+  if (playerClient !== 'web' && fsSync.existsSync(COOKIE_PATH)) args.push('--cookies', COOKIE_PATH);
   return args;
 }
 
 async function streamViaYtDlp(videoId: string, req: Request, res: Response, attachment?: string): Promise<void> {
-  const process = spawn('yt-dlp', ytDlpArgs(videoId));
-  const stop = () => { if (!process.killed) process.kill('SIGTERM'); };
-  req.once('aborted', stop);
-  res.once('close', () => { if (!res.writableEnded) stop(); });
-  res.writeHead(200, {
-    'Content-Type': 'audio/mp4',
-    'Accept-Ranges': 'none',
-    'Cache-Control': 'private, no-store',
-    ...(attachment ? { 'Content-Disposition': `attachment; filename="${attachment}"` } : {}),
-  });
-  process.stderr.on('data', (data: Buffer) => logger.debug({ videoId, ytdlp: data.toString().trim() }, 'yt-dlp stderr'));
-  try {
-    await pipeline(process.stdout, res);
-  } catch (err) {
-    if (!res.writableEnded) logger.warn({ err, videoId }, 'yt-dlp stream interrupted');
-  } finally {
+  const clients = ['web', 'ios', 'android', 'tv_embedded'];
+
+  for (const client of clients) {
+    const process = spawn('yt-dlp', ytDlpArgs(videoId, client));
+    const stop = () => { if (!process.killed) process.kill('SIGTERM'); };
+    req.once('aborted', stop);
+    res.once('close', () => { if (!res.writableEnded) stop(); });
+
+    let stderr = '';
+    process.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+    const buffer = new PassThrough({ highWaterMark: 65536 });
+    process.stdout.pipe(buffer);
+
+    const result = await new Promise<'ok' | 'error'>((resolve) => {
+      let headersSent = false;
+
+      const sendError = () => {
+        stop();
+        if (!res.headersSent) {
+          resolve('error');
+        } else {
+          if (!res.writableEnded) res.end();
+          resolve('ok');
+        }
+      };
+
+      const sendHeaders = () => {
+        if (headersSent) return;
+        headersSent = true;
+        res.writeHead(200, {
+          'Content-Type': 'audio/mp4',
+          'Accept-Ranges': 'none',
+          'Cache-Control': 'private, no-store',
+          ...(attachment ? { 'Content-Disposition': `attachment; filename="${attachment}"` } : {}),
+        });
+      };
+
+      buffer.once('data', () => {
+        sendHeaders();
+        buffer.pipe(res, { end: false });
+        buffer.on('end', () => {
+          if (!res.writableEnded) res.end();
+          stop();
+          resolve('ok');
+        });
+      });
+
+      process.on('exit', (code) => {
+        if (!headersSent) {
+          resolve('error');
+        }
+      });
+
+      const timer = setTimeout(() => {
+        if (!headersSent) { process.kill('SIGTERM'); resolve('error'); }
+      }, 60_000);
+
+      buffer.once('data', () => clearTimeout(timer));
+
+      process.on('error', () => { if (!headersSent) resolve('error'); });
+    });
+
+    if (result === 'ok') return;
+    // Client failed, clean up and try next
     stop();
+  }
+
+  // All clients failed
+  if (!res.headersSent) {
+    res.writeHead(502, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'yt-dlp failed with all player clients', code: 'STREAM_ERROR' }));
   }
 }
 
@@ -171,13 +240,9 @@ router.get('/download/:songId', authMiddleware, async (req: Request<{ songId: st
   const { songId } = req.params;
   try {
     const { provider, sourceId } = providerRegistry.getProviderFromSongId(songId);
-    if (provider.type === 'youtube') {
-      const videoId = sourceId.startsWith('yt_') ? sourceId.slice(3) : sourceId;
-      await streamViaYtDlp(videoId, req, res, `${videoId}.m4a`);
-      return;
-    }
     const info = await provider.getStreamInfo(sourceId);
     if (isLocalUrl(info.url)) await sendLocalFile(req, res, info, false, `${songId}.mp4`);
+    else if (info.url.includes('pipedproxy') || info.url.includes('pipedapi')) res.redirect(info.url);
     else if (!(await sendUpstream(req, res, info, false, `${songId}.mp4`))) res.status(502).json({ error: 'Failed to fetch audio from source', code: 'STREAM_ERROR' });
   } catch (err) {
     logger.error({ err, songId }, 'Download proxy error');
@@ -198,6 +263,7 @@ router.head('/:songId', streamAuth, async (req: Request<{ songId: string }>, res
 
 router.get('/:songId', streamAuth, streamLimiter, async (req: Request<{ songId: string }>, res: Response) => {
   const { songId } = req.params;
+
   try {
     const { provider, sourceId } = providerRegistry.getProviderFromSongId(songId);
     const info = await provider.getStreamInfo(sourceId);
@@ -207,19 +273,14 @@ router.get('/:songId', streamAuth, streamLimiter, async (req: Request<{ songId: 
       return;
     }
 
-    try {
-      if (await sendUpstream(req, res, info)) return;
-    } catch {
-      // YouTube has a final pipe fallback for IP/session-bound CDN URLs. Other
-      // providers return a normal upstream failure rather than changing source.
-    }
-
-    if (provider.type === 'youtube') {
-      const videoId = sourceId.startsWith('yt_') ? sourceId.slice(3) : sourceId;
-      logger.warn({ videoId }, 'Using yt-dlp pipe fallback after CDN proxy failure');
-      await streamViaYtDlp(videoId, req, res);
+    // Piped CDN URLs are directly accessible from clients — no proxy needed
+    if (info.url.includes('pipedproxy') || info.url.includes('pipedapi') || info.url.endsWith('.m3u8')) {
+      res.redirect(info.url);
       return;
     }
+
+    if (await sendUpstream(req, res, info)) return;
+
     if (!res.headersSent) res.status(502).json({ error: 'Failed to fetch audio from source', code: 'STREAM_ERROR' });
   } catch (err: any) {
     logger.error({ err, songId }, 'Stream error');

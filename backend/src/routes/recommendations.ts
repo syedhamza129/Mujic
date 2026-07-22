@@ -4,10 +4,10 @@ import { authMiddleware } from '../middleware/auth';
 import { logger } from '../lib/logger';
 import { formatSongId } from '../lib/songId';
 import { toRenderableArtworkUrl } from '../lib/mediaTickets';
-import { YouTubeProvider } from '../providers/youtube/YouTubeProvider';
+import { PipedProvider } from '../providers/piped/PipedProvider';
 
 const router = Router();
-const ytProvider = new YouTubeProvider();
+const ytProvider = new PipedProvider();
 
 // Helper to get most frequent items
 function getMostFrequent(arr: string[], topN: number): string[] {

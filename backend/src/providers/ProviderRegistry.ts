@@ -1,6 +1,6 @@
 import { logger } from '../lib/logger';
 import type { MusicProvider, NormalizedSong, SearchOptions, ProviderType } from './types';
-import { YouTubeProvider } from './youtube/YouTubeProvider';
+import { PipedProvider } from './piped/PipedProvider';
 import { ArchiveProvider } from './archive/ArchiveProvider';
 import { UploadProvider } from './uploads/UploadProvider';
 
@@ -8,7 +8,7 @@ export class ProviderRegistry {
   private providers: Map<ProviderType, MusicProvider> = new Map();
 
   constructor() {
-    this.register(new YouTubeProvider());
+    this.register(new PipedProvider());
     this.register(new ArchiveProvider());
     this.register(new UploadProvider());
   }

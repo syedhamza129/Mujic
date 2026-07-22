@@ -1,11 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../middleware/auth';
-import { YouTubeProvider } from '../providers/youtube/YouTubeProvider';
+import { PipedProvider } from '../providers/piped/PipedProvider';
 import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
 
 const router = Router();
-const ytProvider = new YouTubeProvider();
+const ytProvider = new PipedProvider();
 
 const CURATED_QUERIES: Record<string, { query: string; limit: number }> = {
   bollywood: { query: 'bollywood hits 2026', limit: 15 },

@@ -31,4 +31,5 @@ RUN mkdir -p /app/storage
 ENV NODE_ENV=production
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/server.js"]
+# Decode YouTube cookies from env var if provided (base64-encoded Netscape format)
+CMD ["sh", "-c", "if [ -n \"$YOUTUBE_COOKIES\" ]; then printf '%s' \"$YOUTUBE_COOKIES\" | base64 -d > /app/cookies.txt && echo 'Cookies decoded'; fi; npx prisma db push --accept-data-loss && node dist/server.js"]

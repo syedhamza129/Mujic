@@ -25,7 +25,7 @@ const envSchema = z.object({
 
   // App
   PORT: z.coerce.number().default(3000),
-  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  NODE_ENV: z.string().default('development').transform(v => v.toLowerCase()).pipe(z.enum(['development', 'production', 'test'])),
   API_URL: z.string().default('http://localhost:3000'),
   CORS_ORIGIN: z.string().default('*'),
 });
