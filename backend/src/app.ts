@@ -22,6 +22,7 @@ import genreRoutes from './routes/genres';
 import recommendationRoutes from './routes/recommendations';
 import exploreRoutes from './routes/explore';
 import mediaRoutes from './routes/media';
+import debugRoutes from './routes/debug';
 
 const app = express();
 
@@ -82,6 +83,7 @@ app.use('/api/uploads', uploadRoutes);
 app.use('/api/genres', genreRoutes);
 app.use('/api/recommendations', recommendationRoutes);
 app.use('/api/explore', exploreRoutes);
+app.use('/debug', debugRoutes);
 
 // ─── 404 Handler ───
 app.use((_req, res) => {

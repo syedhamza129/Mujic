@@ -60,7 +60,8 @@ async function pipedFetch(path: string, timeoutMs = 15000): Promise<any> {
       return JSON.parse(text);
     } catch (err: any) {
       lastErr = err;
-      logger.warn({ err: err.message, baseUrl }, 'Piped instance failed');
+      const cause = err.cause?.message || err.cause?.code || err.cause || '';
+      logger.warn({ err: err.message, cause: String(cause).slice(0, 200), baseUrl }, 'Piped instance failed');
     }
   }
   throw lastErr || new Error('All Piped instances failed');
