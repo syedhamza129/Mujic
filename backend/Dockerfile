@@ -31,7 +31,4 @@ RUN mkdir -p /app/storage
 ENV NODE_ENV=production
 EXPOSE 3000
 
-COPY backend/start.sh ./
-RUN chmod +x start.sh
-
-CMD ["./start.sh"]
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/server.js"]
